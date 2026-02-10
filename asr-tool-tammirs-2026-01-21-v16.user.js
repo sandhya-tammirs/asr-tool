@@ -1,7 +1,7 @@
 
 // ==UserScript==
 // @name              Andon_Survey_Reminder
-// @version           2026-01-21-v16
+// @version           2026-02-10-v17
 // @author            Sandhya Tammireddy
 // @run-at            document-idle
 // @description       Floating notification to remind associates to complete andon satisfaction survey
@@ -19,10 +19,9 @@
     let notificationActive = false;
     let autoCloseTimer = null;
     let widgetCheckTimer = null;
-    let buttonWasClicked = false; // Flag to track if button was actually clicked
-    const TWO_HOURS = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+    let buttonWasClicked = false;
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
 
-    // Add CSS animations
     const style = document.createElement('style');
     style.textContent = `
         @keyframes ring {
@@ -89,7 +88,6 @@
     `;
     document.head.appendChild(style);
 
-    // Find the andon iframe
     function findAndonIframe() {
         const iframes = document.querySelectorAll('iframe');
         for (let iframe of iframes) {
@@ -101,9 +99,7 @@
         return null;
     }
 
-    // Create notification above iframe
     function createNotification() {
-        // Only create notification if button was actually clicked
         if (!buttonWasClicked) return;
         if (document.getElementById('andon-survey-reminder')) return;
 
@@ -140,7 +136,6 @@
             </div>
         `;
 
-        // Calculate position based on iframe location
         let top, left, width;
 
         if (iframe && iframe.offsetParent !== null) {
@@ -174,7 +169,6 @@
         document.body.appendChild(notification);
         notificationActive = true;
 
-        // Add button hover and click effects
         const button = document.getElementById('survey-completed-btn');
         if (button) {
             button.addEventListener('mouseenter', function() {
@@ -188,32 +182,26 @@
                 }
             });
             button.addEventListener('click', function() {
-                // Remove pulsing animation
                 this.className = '';
                 this.style.backgroundColor = '#28A745';
                 this.style.cursor = 'default';
                 this.disabled = true;
 
-                // Create animated checkmark and text
-                this.innerHTML = '<span class="check-icon">✓</span> <span class="completed-text">Survey Completed</span>';
+                this.innerHTML = '<span class="check-icon">✓</span> <span class="completed-text">Thank you</span>';
 
-                // Store acknowledgment flag
                 GM_setValue('andon_survey_acknowledged', true);
 
-                // Remove notification after 5 seconds
                 setTimeout(function() {
                     removeNotification();
                 }, 5000);
             });
         }
 
-        // Set auto-close timer for 2 hours
         autoCloseTimer = setTimeout(function() {
             removeNotification();
         }, TWO_HOURS);
     }
 
-    // Remove notification
     function removeNotification() {
         const notification = document.getElementById('andon-survey-reminder');
         if (notification) {
@@ -230,10 +218,9 @@
         }
 
         notificationActive = false;
-        buttonWasClicked = false; // Reset flag
+        buttonWasClicked = false;
     }
 
-    // Check if andon iframe is still visible
     function isAndonIframeVisible() {
         const iframe = findAndonIframe();
         if (!iframe) return false;
@@ -242,7 +229,6 @@
         return rect.width > 0 && rect.height > 0 && iframe.offsetParent !== null;
     }
 
-    // Monitor if iframe closes
     function monitorIframeClosure() {
         setTimeout(function() {
             widgetCheckTimer = setInterval(function() {
@@ -253,31 +239,27 @@
         }, 15000);
     }
 
-    // Attach listener to Pull Andon Cord button
     function attachButtonListener() {
         document.addEventListener('click', function(event) {
             const target = event.target;
 
             const buttonText = target.textContent || target.innerText || '';
             if (buttonText.includes('Pull Andon Cord')) {
-                // Set flag that button was clicked
                 buttonWasClicked = true;
 
                 setTimeout(function() {
                     createNotification();
                     monitorIframeClosure();
-                }, 3000); // 3 second delay for iframe to load
+                }, 3000);
                 return;
             }
 
-            // Check parent elements
             let parent = target.parentElement;
             for (let i = 0; i < 3; i++) {
                 if (parent) {
                     const parentText = parent.textContent || parent.innerText || '';
                     if (parentText.includes('Pull Andon Cord') &&
                         (parent.tagName === 'BUTTON' || parent.getAttribute('role') === 'button')) {
-                        // Set flag that button was clicked
                         buttonWasClicked = true;
 
                         setTimeout(function() {
@@ -292,14 +274,12 @@
         }, true);
     }
 
-    // Initialize
     function init() {
         setTimeout(function() {
             attachButtonListener();
         }, 1000);
     }
 
-    // Start when page is ready
     let currentUrl = window.location.href;
     if (currentUrl.includes('view-case')) {
         if (document.readyState === 'loading') {
