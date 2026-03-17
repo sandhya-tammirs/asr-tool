@@ -1,7 +1,6 @@
-
 // ==UserScript==
 // @name              Andon_Survey_Reminder
-// @version           2026-02-10-v17
+// @version           2026-02-10-v22
 // @author            Sandhya Tammireddy
 // @run-at            document-idle
 // @description       Floating notification to remind associates to complete andon satisfaction survey
@@ -17,10 +16,17 @@
     'use strict';
 
     let notificationActive = false;
-    let autoCloseTimer = null;
     let widgetCheckTimer = null;
+    let iframePollTimer = null;
+    let iframeResizeObserver = null;
     let buttonWasClicked = false;
-    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    let consecutiveFailures = 0;
+    const IFRAME_POLL_INTERVAL = 500;
+    const IFRAME_POLL_TIMEOUT = 15000;
+    const CLOSURE_CHECK_INTERVAL = 1000;
+    const CLOSURE_INITIAL_DELAY = 5000;
+    const CONSECUTIVE_FAILURES_REQUIRED = 2;
+    const THANK_YOU_DISPLAY_TIME = 2000;
 
     const style = document.createElement('style');
     style.textContent = `
@@ -85,8 +91,58 @@
             animation: fadeInText 0.5s ease-out 0.3s forwards;
             opacity: 0;
         }
+        #andon-survey-reminder {
+            background-color: #FFD700;
+            color: #000000;
+            padding: 0;
+            border-radius: 6px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+            z-index: 10001;
+            font-family: Arial, sans-serif;
+            border: 3px solid #FFA500;
+            box-sizing: border-box;
+            margin-bottom: 5px;
+        }
     `;
     document.head.appendChild(style);
+
+    // -------------------------------------------------------
+    // Helper: collect only the SHALLOW text of an element
+    // -------------------------------------------------------
+    function getShallowText(element) {
+        if (!element) return '';
+        let text = '';
+        element.childNodes.forEach(function(node) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                text += node.textContent;
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                const tag = node.tagName.toLowerCase();
+                if (['span', 'b', 'i', 'em', 'strong', 'label', 'svg', 'img'].includes(tag)) {
+                    text += node.textContent;
+                }
+            }
+        });
+        return text.trim();
+    }
+
+    // -------------------------------------------------------
+    // Given a click-event target, decide whether the actual
+    // "Pull Andon Cord" button was the one that was clicked.
+    // -------------------------------------------------------
+    function isAndonButtonClick(target) {
+        const btn = target.closest('button, [role="button"]');
+        if (!btn) return false;
+
+        const btnText = getShallowText(btn);
+        if (btnText.includes('Pull Andon Cord')) return true;
+
+        if (!btn.querySelector('button, [role="button"]')) {
+            const fullText = (btn.textContent || '').trim();
+            if (fullText.includes('Pull Andon Cord')) return true;
+        }
+
+        return false;
+    }
 
     function findAndonIframe() {
         const iframes = document.querySelectorAll('iframe');
@@ -99,14 +155,56 @@
         return null;
     }
 
+    function isAndonIframeVisible() {
+        const iframe = findAndonIframe();
+        if (!iframe) return false;
+
+        const rect = iframe.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && iframe.offsetParent !== null;
+    }
+
+    // -------------------------------------------------------
+    // Watch the iframe for size changes and sync the
+    // notification width to match.
+    // -------------------------------------------------------
+    function startResizeObserver(iframe) {
+        if (iframeResizeObserver) {
+            iframeResizeObserver.disconnect();
+        }
+
+        iframeResizeObserver = new ResizeObserver(function(entries) {
+            const notification = document.getElementById('andon-survey-reminder');
+            if (!notification) return;
+
+            for (let entry of entries) {
+                const newWidth = entry.contentRect.width;
+                if (newWidth > 0) {
+                    notification.style.width = newWidth + 'px';
+                }
+            }
+        });
+
+        iframeResizeObserver.observe(iframe);
+    }
+
+    function stopResizeObserver() {
+        if (iframeResizeObserver) {
+            iframeResizeObserver.disconnect();
+            iframeResizeObserver = null;
+        }
+    }
+
     function createNotification() {
         if (!buttonWasClicked) return;
         if (document.getElementById('andon-survey-reminder')) return;
+        if (!isAndonIframeVisible()) return;
 
         const iframe = findAndonIframe();
+        if (!iframe || !iframe.parentElement) return;
 
         const notification = document.createElement('div');
         notification.id = 'andon-survey-reminder';
+        notification.style.width = iframe.offsetWidth + 'px';
         notification.innerHTML = `
             <div style="padding: 15px 20px; display: flex; align-items: center; gap: 15px;">
                 <div class="andon-bell-icon">🔔</div>
@@ -136,38 +234,12 @@
             </div>
         `;
 
-        let top, left, width;
-
-        if (iframe && iframe.offsetParent !== null) {
-            const rect = iframe.getBoundingClientRect();
-            top = (rect.top + window.scrollY - 95) + 'px';
-            left = (rect.left + window.scrollX) + 'px';
-            width = rect.width + 'px';
-        } else {
-            top = '80px';
-            left = '50%';
-            width = '600px';
-            notification.style.transform = 'translateX(-50%)';
-        }
-
-        Object.assign(notification.style, {
-            position: 'absolute',
-            top: top,
-            left: left,
-            width: width,
-            backgroundColor: '#FFD700',
-            color: '#000000',
-            padding: '0',
-            borderRadius: '6px',
-            boxShadow: '0 6px 16px rgba(0,0,0,0.3)',
-            zIndex: '10001',
-            fontFamily: 'Arial, sans-serif',
-            border: '3px solid #FFA500',
-            boxSizing: 'border-box'
-        });
-
-        document.body.appendChild(notification);
+        // Insert directly before the iframe in the DOM
+        iframe.parentElement.insertBefore(notification, iframe);
         notificationActive = true;
+
+        // Start watching iframe for size changes
+        startResizeObserver(iframe);
 
         const button = document.getElementById('survey-completed-btn');
         if (button) {
@@ -193,13 +265,9 @@
 
                 setTimeout(function() {
                     removeNotification();
-                }, 5000);
+                }, THANK_YOU_DISPLAY_TIME);
             });
         }
-
-        autoCloseTimer = setTimeout(function() {
-            removeNotification();
-        }, TWO_HOURS);
     }
 
     function removeNotification() {
@@ -208,68 +276,87 @@
             notification.remove();
         }
 
-        if (autoCloseTimer) {
-            clearTimeout(autoCloseTimer);
-            autoCloseTimer = null;
-        }
         if (widgetCheckTimer) {
             clearInterval(widgetCheckTimer);
             widgetCheckTimer = null;
         }
+        if (iframePollTimer) {
+            clearInterval(iframePollTimer);
+            iframePollTimer = null;
+        }
+
+        stopResizeObserver();
 
         notificationActive = false;
         buttonWasClicked = false;
+        consecutiveFailures = 0;
     }
 
-    function isAndonIframeVisible() {
-        const iframe = findAndonIframe();
-        if (!iframe) return false;
-
-        const rect = iframe.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && iframe.offsetParent !== null;
-    }
-
+    // -------------------------------------------------------
+    // Monitor iframe closure with consecutive failure check.
+    // Requires 2 consecutive failures (2 seconds) before
+    // removing — prevents false closures from brief flickers.
+    // Starts 5 seconds after notification appears to let
+    // the widget fully stabilize.
+    // -------------------------------------------------------
     function monitorIframeClosure() {
         setTimeout(function() {
             widgetCheckTimer = setInterval(function() {
-                if (notificationActive && !isAndonIframeVisible()) {
-                    removeNotification();
+                if (!notificationActive) return;
+
+                if (!isAndonIframeVisible()) {
+                    consecutiveFailures++;
+
+                    if (consecutiveFailures >= CONSECUTIVE_FAILURES_REQUIRED) {
+                        removeNotification();
+                    }
+                } else {
+                    // Iframe is visible — reset failure count
+                    consecutiveFailures = 0;
                 }
-            }, 5000);
-        }, 15000);
+            }, CLOSURE_CHECK_INTERVAL);
+        }, CLOSURE_INITIAL_DELAY);
     }
 
-    function attachButtonListener() {
-        document.addEventListener('click', function(event) {
-            const target = event.target;
+    // -------------------------------------------------------
+    // Poll for the Andon iframe instead of a fixed delay.
+    // Only creates the notification once the iframe is
+    // confirmed visible. If it never appears, nothing shows.
+    // -------------------------------------------------------
+    function waitForIframeAndShow() {
+        let elapsed = 0;
 
-            const buttonText = target.textContent || target.innerText || '';
-            if (buttonText.includes('Pull Andon Cord')) {
-                buttonWasClicked = true;
+        iframePollTimer = setInterval(function() {
+            elapsed += IFRAME_POLL_INTERVAL;
 
-                setTimeout(function() {
-                    createNotification();
-                    monitorIframeClosure();
-                }, 3000);
+            if (isAndonIframeVisible()) {
+                clearInterval(iframePollTimer);
+                iframePollTimer = null;
+
+                createNotification();
+                monitorIframeClosure();
                 return;
             }
 
-            let parent = target.parentElement;
-            for (let i = 0; i < 3; i++) {
-                if (parent) {
-                    const parentText = parent.textContent || parent.innerText || '';
-                    if (parentText.includes('Pull Andon Cord') &&
-                        (parent.tagName === 'BUTTON' || parent.getAttribute('role') === 'button')) {
-                        buttonWasClicked = true;
+            if (elapsed >= IFRAME_POLL_TIMEOUT) {
+                clearInterval(iframePollTimer);
+                iframePollTimer = null;
+                buttonWasClicked = false;
+            }
+        }, IFRAME_POLL_INTERVAL);
+    }
 
-                        setTimeout(function() {
-                            createNotification();
-                            monitorIframeClosure();
-                        }, 3000);
-                        return;
-                    }
-                    parent = parent.parentElement;
-                }
+    // -------------------------------------------------------
+    // Click handler — uses closest() + shallow-text check
+    // so only the real button triggers the reminder.
+    // -------------------------------------------------------
+    function attachButtonListener() {
+        document.addEventListener('click', function(event) {
+            if (notificationActive || buttonWasClicked) return;
+
+            if (isAndonButtonClick(event.target)) {
+                buttonWasClicked = true;
+                waitForIframeAndShow();
             }
         }, true);
     }
@@ -289,4 +376,3 @@
         }
     }
 })();
-
